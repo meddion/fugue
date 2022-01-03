@@ -1,3 +1,4 @@
+use crate::lexer::*;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 
@@ -38,9 +39,29 @@ pub enum Token {
 
     // Literals
     Ident(String),
-    Int(i64),
-    Float(f64),
+    Number(f64),
     Str(String),
+}
+
+impl Token {
+    pub fn match_lexem(lexem: &str) -> Option<&Token> {
+        TOKEN_MAP.get(lexem)
+    }
+}
+
+pub fn next_is_equal_to(tokens_iter: &mut LexerIter, expected: &Token) -> bool {
+    match tokens_iter.peek() {
+        Some(&token) if token == expected => true,
+        _ => false,
+    }
+}
+
+pub fn next_is_of_type(tokens_iter: &mut LexerIter, expected: &Token) -> bool {
+    use std::mem::discriminant;
+    match tokens_iter.peek() {
+        Some(&token) => discriminant(token) == discriminant(expected),
+        _ => false,
+    }
 }
 
 lazy_static! {
@@ -55,20 +76,8 @@ lazy_static! {
     .collect();
 }
 
-pub struct TokenExt {
-    token: Token,
-    line: u64,
-    col: u64,
-}
-
-#[derive(Eq, PartialEq)]
-pub enum Cursor {
-    Move,
-    Keep,
-}
-
-impl Token {
-    pub fn match_lexem(lexem: &str) -> Option<&Token> {
-        TOKEN_MAP.get(lexem)
-    }
-}
+// pub struct TokenExt {
+//     token: Token,
+//     line: u64,
+//     col: u64,
+// }

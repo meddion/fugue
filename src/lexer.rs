@@ -1,35 +1,33 @@
 use crate::token::*;
 
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::io::{ErrorKind, Read, Result};
 use std::iter::Peekable;
 use std::str::Chars;
-use std::str::{from_utf8, from_utf8_unchecked};
-
-const BUFF_SIZE: usize = 512;
 
 pub struct Lexer {
     pub tokens: Vec<Token>,
-    line: u64,
-    column: u64,
-    carry_string: String,
+    _line: u64,
+    _column: u64,
 }
-
-pub type TokenHandler =
-    &'static dyn Fn(&mut String, Option<&mut Peekable<Chars<'_>>>) -> Result<Token>;
 
 macro_rules! _next {
     ($iter:ident, $token:expr) => {{
         $iter.next();
-        $token
+        Ok($token)
     }};
 }
 
-impl IntoIterator for Lexer {
-    type Item = Token;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+// pub type LexerIter<'a> = std::slice::Iter<'a, Token>;
+
+pub type LexerIter<'a> = <&'a Lexer as IntoIterator>::IntoIter;
+
+impl<'a> IntoIterator for &'a Lexer {
+    type Item = &'a Token;
+    type IntoIter = Peekable<std::slice::Iter<'a, Token>>;
+
     fn into_iter(self) -> Self::IntoIter {
-        self.tokens.into_iter()
+        self.tokens.as_slice().iter().peekable()
     }
 }
 
@@ -37,210 +35,119 @@ impl Lexer {
     pub fn new() -> Self {
         Self {
             tokens: Vec::new(),
-            line: 0,
-            column: 0,
-            carry_string: String::new(),
+            _line: 0,
+            _column: 0,
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.tokens = Vec::new()
     }
 
     pub fn parse<R: Read>(&mut self, reader: R) -> std::io::Result<()> {
-        let mut input = BufReader::new(reader);
-
-        let mut buf = [0; BUFF_SIZE];
-        let mut valid_until = 0;
-        let mut bytes_read = 0;
-
-        let mut callback: Option<TokenHandler> = None;
-
-        loop {
-            let offset = bytes_read - valid_until;
-
-            for (i, j) in (0..offset).zip(valid_until..) {
-                buf[i] = buf[j];
+        let input = BufReader::new(reader);
+        // TODO: add line number handling
+        for (_, line) in input.lines().enumerate() {
+            if let Ok(mut line) = line {
+                self.add_tokens_from_string(&mut line)?;
             }
-
-            bytes_read = input.read(&mut buf[offset..])?;
-            // FIXME: handle EOF
-            if bytes_read == 0 {
-                break;
-            }
-            bytes_read += offset;
-            valid_until = bytes_read;
-
-            let mut char_iter = match from_utf8(&buf[..bytes_read]) {
-                Ok(s) => s,
-                Err(e) => {
-                    valid_until = e.valid_up_to();
-
-                    let s = unsafe { from_utf8_unchecked(&buf[..valid_until]) };
-                    s
-                }
-            }
-            .chars()
-            .peekable();
-
-            // println!("{:?}", self.tokens);
-
-            // TODO: handle callback
-            if let Some(cb) = callback.take() {
-                match cb(&mut self.carry_string, Some(&mut char_iter)) {
-                    Ok(token) => self.add_token(token),
-                    _ => {
-                        callback = Some(cb);
-                        continue;
-                    }
-                };
-            }
-
-            callback = self.get_tokens(&mut char_iter);
         }
 
-        if callback.is_some() {
-            // println!("carry_string: {}", self.carry_string);
-            // println!("tokens: {:?}", self.tokens);
-            let token = callback.unwrap()(&mut self.carry_string, None)?;
-            self.add_token(token);
-        }
-
-        self.add_token(Token::EOF);
+        self.tokens.push(Token::EOF);
         Ok(())
     }
 
-    fn add_token(&mut self, token: Token) {
-        if token != Token::Skip {
-            self.tokens.push(token);
-        }
-    }
-
-    fn get_tokens(&mut self, str_iter: &mut Peekable<Chars<'_>>) -> Option<TokenHandler> {
+    fn add_tokens_from_string(&mut self, str: &mut String) -> Result<()> {
+        let mut str_iter = str.chars().peekable();
         while let Some(ch) = str_iter.peek() {
-            println!("{}", ch);
             let token = match ch {
-                ch if ch.is_whitespace() => _next!(str_iter, Token::Skip),
-                '\n' | ';' => {
-                    self.line += 1;
-                    self.column = 0;
-                    _next!(str_iter, Token::LineDelim)
-                }
                 '(' => _next!(str_iter, Token::LeftParen),
                 ')' => _next!(str_iter, Token::RightParen),
-                '/' => match Self::parse_slash(&mut self.carry_string, Some(str_iter)) {
-                    Ok(token) => token,
-                    _ => return Some(&Self::parse_slash),
-                },
-                '=' => match Self::parse_equal(&mut self.carry_string, Some(str_iter)) {
-                    Ok(token) => token,
-                    _ => return Some(&Self::parse_equal),
-                },
-                '"' => match Self::parse_string(&mut self.carry_string, Some(str_iter)) {
-                    Ok(token) => token,
-                    _ => return Some(&Self::parse_string),
-                },
-                _ => match Self::parse_word(&mut self.carry_string, Some(str_iter)) {
-                    Ok(token) => token,
-                    _ => return Some(&Self::parse_word),
-                },
+                '[' => _next!(str_iter, Token::LeftBrace),
+                ']' => _next!(str_iter, Token::RightBrace),
+                '*' => _next!(str_iter, Token::Star),
+                '+' => _next!(str_iter, Token::Plus),
+                '-' => _next!(str_iter, Token::Minus),
+                '/' => _next!(str_iter, Token::Slash),
+                '.' => _next!(str_iter, Token::Dot),
+                ',' => _next!(str_iter, Token::Comma),
+                '=' => Lexer::parse_equal(&mut str_iter),
+                '"' => Lexer::parse_string(&mut str_iter),
+                ch if Lexer::is_line_delim(*ch) => _next!(str_iter, Token::LineDelim),
+                ch if ch.is_whitespace() => _next!(str_iter, Token::Skip),
+                ch if ch.is_numeric() => Lexer::parse_number(&mut str_iter),
+                ch if ch.is_alphanumeric() => Lexer::parse_word(&mut str_iter),
+
+                _ => return Err(ErrorKind::InvalidData.into()),
             };
 
-            self.add_token(token);
+            match token {
+                Err(err) => return Err(err),
+                Ok(token) if token != Token::Skip => self.tokens.push(token),
+                _ => (),
+            }
         }
-        None
+        Ok(())
     }
 
-    fn parse_slash(
-        carry_string: &mut String,
-        str_iter: Option<&mut Peekable<Chars<'_>>>,
-    ) -> Result<Token> {
-        Ok(if let Some(str_iter) = str_iter {
-            if !carry_string.is_empty() {
-                match str_iter.find(|c| *c == '\n') {
-                    Some(_) => {
-                        carry_string.clear();
-                        return Ok(Token::Skip);
-                    }
-                    None => return Err(ErrorKind::UnexpectedEof.into()),
-                }
-            }
+    fn is_line_delim(c: char) -> bool {
+        c == '\n' || c == ';'
+    }
 
-            match str_iter.peek() {
-                Some('/') => Token::Slash,
-                None => return Err(ErrorKind::UnexpectedEof.into()),
-                _ => Token::Slash,
-            }
-        } else {
-            Token::Slash
+    fn parse_equal(str_iter: &mut Peekable<Chars<'_>>) -> Result<Token> {
+        str_iter.next();
+        Ok(match str_iter.peek() {
+            Some('=') => Token::DoubleEqual,
+            _ => Token::Equal,
         })
     }
 
-    fn parse_equal(
-        _carry_string: &mut String,
-        str_iter: Option<&mut Peekable<Chars<'_>>>,
-    ) -> Result<Token> {
-        // carry_string.clear();
-        Ok(if let Some(str_iter) = str_iter {
-            str_iter.next().unwrap();
+    fn parse_string(str_iter: &mut Peekable<Chars<'_>>) -> Result<Token> {
+        str_iter.next();
+        let mut new_string = String::new();
+        for c in str_iter {
+            match c {
+                c if Lexer::is_line_delim(c) => return Err(ErrorKind::UnexpectedEof.into()),
+                '"' => return Ok(Token::Str(new_string)),
+                _ => new_string.push(c),
+            }
+        }
+
+        Err(ErrorKind::UnexpectedEof.into())
+    }
+
+    fn parse_word(str_iter: &mut Peekable<Chars<'_>>) -> Result<Token> {
+        let mut ident_name: String = String::new();
+        loop {
+            ident_name.push(str_iter.next().unwrap());
             match str_iter.peek() {
-                Some('=') => Token::DoubleEqual,
-                None => return Err(ErrorKind::UnexpectedEof.into()),
-                _ => Token::Equal,
-            }
-        } else {
-            Token::Equal
-        })
-    }
-
-    fn parse_string(
-        carry_string: &mut String,
-        str_iter: Option<&mut Peekable<Chars<'_>>>,
-    ) -> Result<Token> {
-        if let Some(str_iter) = str_iter {
-            if carry_string.is_empty() {
-                str_iter.next().unwrap();
-            }
-
-            loop {
-                match str_iter.peek() {
-                    Some('\"') => break,
-                    Some(_) => carry_string.push(str_iter.next().unwrap()),
-                    None => return Err(ErrorKind::UnexpectedEof.into()),
-                }
-            }
-            str_iter.next();
-        } else {
-            return Err(ErrorKind::UnexpectedEof.into());
-        }
-
-        Ok(Token::Str(
-            carry_string.drain(..carry_string.len()).collect(),
-        ))
-    }
-
-    fn parse_word(
-        carry_string: &mut String,
-        str_iter: Option<&mut Peekable<Chars<'_>>>,
-    ) -> Result<Token> {
-        if let Some(str_iter) = str_iter {
-            // carry_string.push(str_iter.next().unwrap());
-
-            // let is_valid_char = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
-            let is_valid_char = |ch: char| !ch.is_whitespace() && !ch.is_ascii_punctuation();
-            loop {
-                match str_iter.peek() {
-                    Some(ch) if is_valid_char(*ch) => {
-                        // println!("next word: {}", *ch);
-                        carry_string.push(str_iter.next().unwrap());
-                    }
-                    Some(_) => break,
-                    None => return Err(ErrorKind::UnexpectedEof.into()),
-                }
+                Some(ch) if !ch.is_alphanumeric() => break,
+                None => break,
+                _ => (),
             }
         }
 
-        let res: String = carry_string.drain(..carry_string.len()).collect();
-        Ok(match Token::match_lexem(res.as_ref()) {
+        Ok(match Token::match_lexem(ident_name.as_str()) {
             Some(token) => token.clone(),
-            _ => Token::Ident(res),
+            _ => Token::Ident(ident_name),
         })
+    }
+
+    fn parse_number(str_iter: &mut Peekable<Chars<'_>>) -> Result<Token> {
+        let mut num_string = String::new();
+
+        loop {
+            num_string.push(str_iter.next().unwrap());
+
+            match str_iter.peek() {
+                Some(ch) if !ch.is_numeric() => break,
+                Some('.') => continue,
+                None => break,
+                _ => (),
+            }
+        }
+
+        Ok(Token::Number(num_string.parse::<f64>().unwrap()))
     }
 }
 
@@ -250,7 +157,7 @@ mod tests {
     use std::fs::File;
     use std::io::Result;
 
-    fn vectors_equal(a: Vec<Token>, b: Vec<Token>) -> bool {
+    fn vectors_equal(a: &Vec<Token>, b: &Vec<Token>) -> bool {
         if a.len() != b.len() {
             false
         } else {
@@ -269,36 +176,128 @@ mod tests {
             Token::Let,
             Token::Ident("b".to_string()),
             Token::Equal,
-            Token::Str("Send you my love 😘".to_string()),
+            Token::Str("💘💘 Send you my love 😘".to_string()),
             Token::LineDelim,
             Token::EOF,
         ];
-        println!("{:?}", lexer.tokens);
-        assert!(vectors_equal(expected, lexer.tokens));
+
+        assert!(vectors_equal(&expected, &lexer.tokens));
 
         Ok(())
     }
 
-    // #[test]
+    #[test]
     #[should_panic(expected = "called `Result::unwrap()` on an `Err` value: Kind(UnexpectedEof)")]
-    fn test_uncomplete_string() {
+    fn test_incomplete_string() {
         let mut lexer = Lexer::new();
-        let test_string: &[u8] = "type = \"human".as_bytes();
+        let test_string: &[u8] = "let var1 = \"human".as_bytes();
         lexer.parse(test_string).unwrap();
     }
 
-    // #[test]
+    #[test]
     fn test_utf8_string() {
         let mut lexer = Lexer::new();
-        let test_string: &[u8] = "💘💘 \"YOU LOOK SO CHARMING TODAY\" 💘💘".as_bytes();
+        let test_string: &[u8] = "\"💘💘 YOU LOOK SO CHARMING TODAY 💘💘\"".as_bytes();
         lexer.parse(test_string).unwrap();
         let expected = vec![
-            Token::Ident("💘💘".to_string()),
-            Token::Str("YOU LOOK SO CHARMING TODAY".to_string()),
-            Token::Ident("💘💘".to_string()),
+            Token::Str("💘💘 YOU LOOK SO CHARMING TODAY 💘💘".to_string()),
             Token::EOF,
         ];
-        // println!("{:?}", lexer.tokens);
-        assert!(vectors_equal(expected, lexer.tokens));
+
+        assert!(vectors_equal(&expected, &lexer.tokens));
+    }
+
+    #[test]
+    fn test_all_tokens() {
+        let mut lexer = Lexer::new();
+        let keywords: &[u8] = "let if else loop return ;".as_bytes();
+        lexer.parse(keywords).unwrap();
+        let expected = vec![
+            Token::Let,
+            Token::If,
+            Token::Else,
+            Token::Loop,
+            Token::Return,
+            Token::LineDelim,
+            Token::EOF,
+        ];
+        assert!(vectors_equal(&expected, &lexer.tokens));
+
+        let mut token_iter = lexer.into_iter();
+        for token in &expected {
+            assert!(next_is_equal_to(&mut token_iter, token));
+            token_iter.next().unwrap();
+        }
+
+        lexer.clear();
+        assert!(vectors_equal(&vec![], &lexer.tokens));
+
+        let maths: &[u8] = "()[]-+/*; math.sqrt([1.5, 2, 3.0])".as_bytes();
+        lexer.parse(maths).unwrap();
+
+        let expected = vec![
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::RightBrace,
+            Token::Minus,
+            Token::Plus,
+            Token::Slash,
+            Token::Star,
+            Token::LineDelim,
+            Token::Ident("math".to_string()),
+            Token::Dot,
+            Token::Ident("sqrt".to_string()),
+            Token::LeftParen,
+            Token::LeftBrace,
+            Token::Number(1.5),
+            Token::Comma,
+            Token::Number(2.0),
+            Token::Comma,
+            Token::Number(3.0),
+            Token::RightBrace,
+            Token::RightParen,
+            Token::EOF,
+        ];
+
+        // Is Int(1) == Int(2) ?
+        // assert_eq!(Token::Int(1), *token_iter.skip(14).next().unwrap());
+        // assert!(next_is_of_type(
+        //     // token_iter.skip(11).peekable(),
+        //     &Token::Ident("sqrt".to_string()),
+        // ));
+        assert!(vectors_equal(&expected, &lexer.tokens));
+    }
+
+    #[test]
+    fn test_value_class_matching() {
+        let mut lexer = Lexer::new();
+
+        let expected = vec![
+            Token::Ident("math".to_string()),
+            Token::Number(24.0),
+            Token::Str("Hello world".to_string()),
+        ];
+
+        lexer.tokens = expected.clone();
+        let mut token_iter = lexer.into_iter();
+
+        for token in &expected {
+            assert!(next_is_equal_to(&mut token_iter, token));
+            token_iter.next().unwrap();
+        }
+
+        lexer.tokens = expected.clone();
+        let mut token_iter = lexer.into_iter();
+
+        let expected_types = vec![
+            Token::Ident("Computer Science".to_string()),
+            Token::Number(42.0),
+            Token::Str("Hello".to_string()),
+        ];
+        for token in &expected_types {
+            assert!(next_is_of_type(&mut token_iter, token));
+            token_iter.next().unwrap();
+        }
     }
 }

@@ -1,7 +1,8 @@
+mod ast;
 mod lexer;
 mod token;
 
-use crate::lexer::*;
+// use crate::lexer::*;
 
 fn main() -> std::io::Result<()> {
     // let file = File::open("../misc/lexer_test1.fg")?;
