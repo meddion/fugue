@@ -49,17 +49,17 @@ impl Token {
     }
 }
 
-pub fn next_is_equal_to(tokens_iter: &mut LexerIter, expected: &Token) -> bool {
+pub fn next_is_equal_to(tokens_iter: &mut TokenStream, expected: Token) -> bool {
     match tokens_iter.peek() {
-        Some(&token) if token == expected => true,
+        Some(&token) if token == &expected => true,
         _ => false,
     }
 }
 
-pub fn next_is_of_type(tokens_iter: &mut LexerIter, expected: &Token) -> bool {
+pub fn next_is_of_type(tokens_iter: &mut TokenStream, expected: Token) -> bool {
     use std::mem::discriminant;
     match tokens_iter.peek() {
-        Some(&token) => discriminant(token) == discriminant(expected),
+        Some(&token) => discriminant(token) == discriminant(&expected),
         _ => false,
     }
 }

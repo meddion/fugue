@@ -1,63 +1,190 @@
 pub mod errors;
-pub mod nodes;
 use crate::ast::errors::{AstError, Result};
-use crate::ast::nodes::*;
-use crate::{lexer::*, token::*};
-use std::rc::Rc;
+use crate::{
+    lexer::TokenStream,
+    tokens::{next_is_of_type, Token},
+};
 
-pub trait Node {
-    fn dtype(&self) -> &'static str;
+#[derive(Debug)]
+enum BinaryOp {
+    Plus,
+    Minus,
+    Div,
+    Mult,
+
+    Eq,
+    Nq,
+    More { is_eq: bool },
+    Less { is_eq: bool },
 }
-pub trait Expression: Node {}
-pub trait Statement: Node {}
 
+#[derive(Debug)]
+enum UnaryOp {
+    Plus,
+    Minus,
+}
+
+#[derive(Debug)]
+struct Binary {
+    left: Box<Expression>,
+    right: Box<Expression>,
+    op: BinaryOp,
+}
+
+impl Binary {
+    fn new(left: Expression, right: Expression, op: BinaryOp) -> Binary {
+        Binary {
+            left: Box::new(left),
+            right: Box::new(right),
+            op: op,
+        }
+    }
+}
+
+impl Into<Expression> for Binary {
+    fn into(self) -> Expression {
+        Expression::Binary(Binary {
+            left: self.left,
+            right: self.right,
+            op: self.op,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub enum Expression {
+    Num(f64),
+    Str(String),
+    Bool(bool),
+    Var(String),
+
+    Binary(Binary),
+
+    Unary { exp: Box<Expression>, op: UnaryOp },
+    Grouping(Vec<Expression>),
+}
+
+#[derive(Debug)]
+pub enum Statement {
+    Let {
+        ident: String,
+        exp: Expression,
+    },
+    Loop {
+        pred: Expression,
+        block: Vec<Statement>,
+    },
+}
+
+#[derive(Debug)]
 pub struct Program {
-    statements: Vec<Rc<dyn Statement>>,
+    statements: Vec<Statement>,
 }
 
 impl Program {
-    pub fn new() -> Program {
-        Program {
-            statements: Vec::new(),
-        }
+    pub fn create_ast(token_iter: &mut TokenStream) -> Result<Program> {
+        Ok(Program {
+            statements: Self::parse(token_iter)?,
+        })
     }
 
-    pub fn create_ast(&mut self, token_iter: &mut LexerIter) -> Result<()> {
+    fn parse(token_iter: &mut TokenStream) -> Result<Vec<Statement>> {
+        let mut statements = Vec::new();
         while let Some(token) = token_iter.peek() {
             let stmt = match token {
-                Token::Let => LetStmt::parse(token_iter),
+                Token::Let => Self::parse_stmt_let(token_iter),
                 Token::EOF | Token::LineDelim => {
                     token_iter.next().unwrap();
                     continue;
                 }
                 _ => return Err(AstError::General),
             };
-            self.statements.push(stmt?);
+
+            statements.push(stmt?);
         }
 
-        Ok(())
+        Ok(statements)
+    }
+
+    fn parse_expression(token_iter: &mut TokenStream) -> Result<Expression> {
+        while if let Some(Some(token)) = token_iter.next() {
+            match token {
+               Token::Str(string) => return Ok(Expression::Str(string.clone())),
+                _ => (),
+            }
+
+        }
+
+        Err(AstError::Expression)
+    }
+
+    fn parse_stmt_let(tokens_iter: &mut TokenStream) -> Result<Statement> {
+        if !next_is_of_type(tokens_iter, Token::Let) {
+            return Err(AstError::LetStmt);
+        }
+        tokens_iter.next().unwrap();
+
+        let ident = match tokens_iter.next() {
+            Some(Token::Ident(name)) => name.clone(),
+            _ => return Err(AstError::LetStmt),
+        };
+
+        if !next_is_of_type(tokens_iter, Token::Equal) {
+            return Err(AstError::LetStmt);
+        }
+        tokens_iter.next().unwrap();
+
+        let expr = Self::parse_expression(tokens_iter)?;
+
+        Ok(Statement::Let {
+            ident: ident,
+            exp: expr,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lexer::Lexer;
 
     #[test]
     fn ast_test() -> Result<()> {
-        let mut parser = Program::new();
+        // let mut parser = Program::new();
 
-        let mut lexer = Lexer::new();
+        // parser.statements = vec![
+        //     Statement::For {
+        //         pred: Binary::new(
+        //             Expression::Var("num".to_owned()),
+        //             Expression::Num(10.0),
+        //             BinaryOp::More { is_eq: false },
+        //         )
+        //         .into(),
 
-        lexer.tokens = vec![
-            Token::Let,
-            Token::Ident("cat_name".to_owned()),
-            Token::Equal,
-            Token::Str("Tomas".to_owned()),
-            Token::LineDelim,
-        ];
+        //         block: vec![Statement::Let {
+        //             ident: "is_happy".to_owned(),
+        //             exp: Some(Expression::Bool(true)),
+        //         }],
+        //     },
+        //     Statement::Let {
+        //         ident: "greeting".to_owned(),
+        //         exp: Some(Expression::Str("Hello!!!".to_owned())),
+        //     },
+        // ];
 
-        parser.create_ast(&mut lexer.into_iter())?;
+        // println!("{:?}", parser.statements);
+
+        // let mut lexer = Lexer::new();
+
+        // lexer.tokens = vec![
+        //     Token::Let,
+        //     Token::Ident("cat_name".to_owned()),
+        //     Token::Equal,
+        //     Token::Str("Tomas".to_owned()),
+        //     Token::LineDelim,
+        // ];
+
+        // parser.create_ast(&mut lexer.into_iter())?;
         // lexer.clear();
 
         Ok(())

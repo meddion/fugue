@@ -1,4 +1,4 @@
-use crate::token::*;
+use crate::tokens::{next_is_equal_to, next_is_of_type, Token};
 
 use std::io::{BufRead, BufReader};
 use std::io::{ErrorKind, Read, Result};
@@ -18,9 +18,7 @@ macro_rules! _next {
     }};
 }
 
-// pub type LexerIter<'a> = std::slice::Iter<'a, Token>;
-
-pub type LexerIter<'a> = <&'a Lexer as IntoIterator>::IntoIter;
+pub type TokenStream<'a> = <&'a Lexer as IntoIterator>::IntoIter;
 
 impl<'a> IntoIterator for &'a Lexer {
     type Item = &'a Token;
@@ -44,7 +42,7 @@ impl Lexer {
         self.tokens = Vec::new()
     }
 
-    pub fn parse<R: Read>(&mut self, reader: R) -> std::io::Result<()> {
+    pub fn scan<R: Read>(&mut self, reader: R) -> std::io::Result<()> {
         let input = BufReader::new(reader);
         // TODO: add line number handling
         for (_, line) in input.lines().enumerate() {
@@ -71,12 +69,12 @@ impl Lexer {
                 '/' => _next!(str_iter, Token::Slash),
                 '.' => _next!(str_iter, Token::Dot),
                 ',' => _next!(str_iter, Token::Comma),
-                '=' => Lexer::parse_equal(&mut str_iter),
-                '"' => Lexer::parse_string(&mut str_iter),
+                '=' => Lexer::scan_equal(&mut str_iter),
+                '"' => Lexer::scan_string(&mut str_iter),
                 ch if Lexer::is_line_delim(*ch) => _next!(str_iter, Token::LineDelim),
                 ch if ch.is_whitespace() => _next!(str_iter, Token::Skip),
-                ch if ch.is_numeric() => Lexer::parse_number(&mut str_iter),
-                ch if ch.is_alphanumeric() => Lexer::parse_word(&mut str_iter),
+                ch if ch.is_numeric() => Lexer::scan_number(&mut str_iter),
+                ch if ch.is_alphanumeric() => Lexer::scan_word(&mut str_iter),
 
                 _ => return Err(ErrorKind::InvalidData.into()),
             };
@@ -94,7 +92,7 @@ impl Lexer {
         c == '\n' || c == ';'
     }
 
-    fn parse_equal(str_iter: &mut Peekable<Chars<'_>>) -> Result<Token> {
+    fn scan_equal(str_iter: &mut Peekable<Chars<'_>>) -> Result<Token> {
         str_iter.next();
         Ok(match str_iter.peek() {
             Some('=') => Token::DoubleEqual,
@@ -102,7 +100,7 @@ impl Lexer {
         })
     }
 
-    fn parse_string(str_iter: &mut Peekable<Chars<'_>>) -> Result<Token> {
+    fn scan_string(str_iter: &mut Peekable<Chars<'_>>) -> Result<Token> {
         str_iter.next();
         let mut new_string = String::new();
         for c in str_iter {
@@ -116,7 +114,7 @@ impl Lexer {
         Err(ErrorKind::UnexpectedEof.into())
     }
 
-    fn parse_word(str_iter: &mut Peekable<Chars<'_>>) -> Result<Token> {
+    fn scan_word(str_iter: &mut Peekable<Chars<'_>>) -> Result<Token> {
         let mut ident_name: String = String::new();
         loop {
             ident_name.push(str_iter.next().unwrap());
@@ -133,7 +131,7 @@ impl Lexer {
         })
     }
 
-    fn parse_number(str_iter: &mut Peekable<Chars<'_>>) -> Result<Token> {
+    fn scan_number(str_iter: &mut Peekable<Chars<'_>>) -> Result<Token> {
         let mut num_string = String::new();
 
         loop {
@@ -170,7 +168,7 @@ mod tests {
         let file = File::open("./misc/lexer_test1.fg")?;
 
         let mut lexer = Lexer::new();
-        lexer.parse(file)?;
+        lexer.scan(file)?;
 
         let expected = vec![
             Token::Let,
@@ -191,14 +189,14 @@ mod tests {
     fn test_incomplete_string() {
         let mut lexer = Lexer::new();
         let test_string: &[u8] = "let var1 = \"human".as_bytes();
-        lexer.parse(test_string).unwrap();
+        lexer.scan(test_string).unwrap();
     }
 
     #[test]
     fn test_utf8_string() {
         let mut lexer = Lexer::new();
         let test_string: &[u8] = "\"💘💘 YOU LOOK SO CHARMING TODAY 💘💘\"".as_bytes();
-        lexer.parse(test_string).unwrap();
+        lexer.scan(test_string).unwrap();
         let expected = vec![
             Token::Str("💘💘 YOU LOOK SO CHARMING TODAY 💘💘".to_string()),
             Token::EOF,
@@ -211,7 +209,7 @@ mod tests {
     fn test_all_tokens() {
         let mut lexer = Lexer::new();
         let keywords: &[u8] = "let if else loop return ;".as_bytes();
-        lexer.parse(keywords).unwrap();
+        lexer.scan(keywords).unwrap();
         let expected = vec![
             Token::Let,
             Token::If,
@@ -225,7 +223,7 @@ mod tests {
 
         let mut token_iter = lexer.into_iter();
         for token in &expected {
-            assert!(next_is_equal_to(&mut token_iter, token));
+            assert!(next_is_equal_to(&mut token_iter, token.clone()));
             token_iter.next().unwrap();
         }
 
@@ -233,7 +231,7 @@ mod tests {
         assert!(vectors_equal(&vec![], &lexer.tokens));
 
         let maths: &[u8] = "()[]-+/*; math.sqrt([1.5, 2, 3.0])".as_bytes();
-        lexer.parse(maths).unwrap();
+        lexer.scan(maths).unwrap();
 
         let expected = vec![
             Token::LeftParen,
@@ -283,7 +281,7 @@ mod tests {
         let mut token_iter = lexer.into_iter();
 
         for token in &expected {
-            assert!(next_is_equal_to(&mut token_iter, token));
+            assert!(next_is_equal_to(&mut token_iter, token.clone()));
             token_iter.next().unwrap();
         }
 
@@ -296,7 +294,7 @@ mod tests {
             Token::Str("Hello".to_string()),
         ];
         for token in &expected_types {
-            assert!(next_is_of_type(&mut token_iter, token));
+            assert!(next_is_of_type(&mut token_iter, token.clone()));
             token_iter.next().unwrap();
         }
     }
